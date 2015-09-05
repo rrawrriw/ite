@@ -5,14 +5,22 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
+
+	"gopkg.in/mgo.v2/bson"
 )
 
-type IPServer struct {
-	Addr string
-}
+type (
+	IPServer struct {
+		Addr string
+	}
+	IPResponse struct {
+		NewIP string
+	}
+)
 
 func main() {
-	serverIP := flag.String("ip", "127.0.0.1", "Server IP")
+	serverIP := flag.String("ip", "255.255.255.255", "Server IP")
 	serverPort := flag.Int("port", 0, "Server Port")
 	flag.Parse()
 
@@ -40,14 +48,26 @@ func (s IPServer) Run() error {
 		log.Fatal(err.Error())
 	}
 
-	for {
-		packet := make([]byte, 2)
-		read, rAddr, err := conn.ReadFromUDP(packet)
+	for x := 1; ; x++ {
+		request := make([]byte, 2)
+		_, rAddr, err := conn.ReadFromUDP(request)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		log.Println(read, rAddr, string(packet))
-		response := []byte("2")
+		log.Println(
+			"Receive IP Request From",
+			rAddr,
+		)
+
+		tmpIP := "192.168.1." + strconv.Itoa(x)
+		ipResponse := IPResponse{
+			NewIP: tmpIP,
+		}
+		response, err := bson.Marshal(ipResponse)
+		if err != nil {
+			log.Println("ERROR:", err.Error())
+			continue
+		}
 
 		_, err = conn.WriteToUDP(
 			response,
@@ -59,7 +79,7 @@ func (s IPServer) Run() error {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		log.Println("Response with IP")
+		log.Println("Response with IP", ipResponse.NewIP)
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"gopkg.in/mgo.v2/bson"
 	"log"
 	"net"
 	"os"
@@ -12,11 +13,40 @@ import (
 )
 
 const (
-	IPServerIP   = "127.0.0.1"
+	IPServerIP   = "255.255.255.255"
 	IPServerPort = 12345
-	IPClientIP   = "127.0.0.1"
+	IPClientIP   = "255.255.255.255"
 	IPClientPort = 12346
 )
+
+/* Tester Funktion
+ * Sind alle Ausgegeben IP Adressen unterschiedlich
+ * und werden alle Request beantwortet.
+ */
+func Tester(numberOfClients int, boom <-chan time.Time, testerResult chan error, testerIPs chan string) {
+	ips := make(map[string]int)
+	for {
+		select {
+		case ip := <-testerIPs:
+			log.Println("Tester receive", ip)
+			_, ok := ips[ip]
+			if ok {
+				testerResult <- errors.New("Got same IP")
+			}
+
+			ips[ip] = 1
+			log.Println("Collected IPs", strconv.Itoa(len(ips)))
+
+			if len(ips) == numberOfClients {
+				testerResult <- nil
+			}
+		case <-boom:
+			testerResult <- errors.New("You are to slow!")
+		}
+	}
+
+	testerResult <- nil
+}
 
 func AskForIPs(numberOfClients int) {
 	log.Println("Ask for IPs")
@@ -54,15 +84,29 @@ func IPReceivers(numberOfClients int, tester chan string) {
 		log.Fatal(err.Error())
 	}
 	for x := 0; x < numberOfClients; x++ {
-		go func(n int) {
-			log.Println("Start IP reciever", n)
-			packet := []byte{}
-			_, _, err := conn.ReadFromUDP(packet)
+		response := make([]byte, 2048)
+		_, rAddr, err := conn.ReadFromUDP(response)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		go func(n int, rAddr *net.UDPAddr, response []byte) {
+			log.Println("Handle IP response", n)
 			if err != nil {
-				close(tester)
+				log.Fatal(err.Error())
 			}
-			log.Println(string(packet))
-		}(x)
+			ipResponse := IPResponse{}
+			err := bson.Unmarshal(response, &ipResponse)
+			if err != nil {
+				log.Println("ERROR BSON:", err.Error())
+				return
+			}
+			log.Println(
+				"IP Response value",
+				rAddr,
+				ipResponse.NewIP,
+			)
+			tester <- ipResponse.NewIP
+		}(x, rAddr, response)
 	}
 }
 
@@ -85,30 +129,14 @@ func Test_GetIPFromIPServer(t *testing.T) {
 	defer cmd.Wait()
 	defer cmd.Process.Kill()
 
+	log.Println(cmd.Process.Pid)
 	time.Sleep(500 * time.Millisecond)
 
 	boom := time.After(3 * time.Second)
-	testerResult := make(chan error, numberOfClients)
-	testerIPs := make(chan string)
-	/* Tester Funktion
-	 * Sind alle Ausgegeben IP Adressen unterschiedlich
-	 * und werden alle Request beantwortet.
-	 */
-	go func() {
-		ips := make(map[string]int)
-		select {
-		case ip := <-testerIPs:
-			_, ok := ips[ip]
-			if ok {
-				testerResult <- errors.New("too mutch")
-			}
-			ips[ip] = 1
-		case <-boom:
-			testerResult <- errors.New("test")
-		}
+	testerResult := make(chan error)
+	testerIPs := make(chan string, numberOfClients)
 
-		testerResult <- nil
-	}()
+	go Tester(numberOfClients, boom, testerResult, testerIPs)
 
 	go IPReceivers(numberOfClients, testerIPs)
 
