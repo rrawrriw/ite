@@ -64,14 +64,14 @@ func Test_NextIPMemcache_NoEntriesInDB_OK(t *testing.T) {
 		MemcachedUrl: TestMemcachedUrl,
 	}
 
-	ip, confirmID, err := NextIPMemcache(appCtx)
+	ip, confirmID, err := NextIPCache(appCtx)
 
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
 	expectIP := "192.168.0.2"
-	if ip != net.ParseIP(expectIP) {
+	if string(ip) != string(net.ParseIP(expectIP)) {
 		t.Fatal("Expect", expectIP, ", was", ip)
 	}
 	if confirmID == "" {

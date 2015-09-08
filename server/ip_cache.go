@@ -1,5 +1,10 @@
 package main
 
+import (
+	"net"
+	"time"
+)
+
 type IPItemResponse struct {
 	IP        net.IP
 	ConfirmID string
@@ -20,21 +25,23 @@ type SubnetSpec struct {
 
 type IPCacheRequest struct {
 	Request    int
-	ResultChan chan IPItem
+	ResultChan chan IPItemResponse
+	ErrorChan  chan error
 }
 
-type IPCacheC chan IPItem
+type IPCacheC chan IPCacheRequest
 
-type IPCache map[string]IpItem
+type IPCache map[string]IPItem
 
 // Verwaltet IPv4 Adressen
-// 192.168.2.5/24 dann werden die folgenden IP Adressen verwaltet
-// 192.168.2.1 - 192.168.2.255 es ist egal ob eine 5 als letzte
 // ttl in Sekunden
-func NewIPCache(subnet SubnetSpec, init []net.IP, ttl int) {
+func NewIPCache(subnet SubnetSpec, init []IPItem, ttl int) (IPCacheC, error) {
 	ipCacheC := make(chan IPCacheRequest)
-	ipCache := map[string]string{}
-	err := initIPCache(init, &ipCache)
+	ipCache := IPCache{}
+	err := InitIPCache(init, &ipCache)
+	if err != nil {
+		return nil, err
+	}
 	go func() {
 		for req := range ipCacheC {
 			err := CleanIPCache(&ipCache)
@@ -53,13 +60,20 @@ func NewIPCache(subnet SubnetSpec, init []net.IP, ttl int) {
 
 	}()
 
+	return make(IPCacheC), nil
+
+}
+
+func InitIPCache(initIP []IPItem, cache *IPCache) error {
+	return nil
 }
 
 // Entfernet alle Abgelaufen Einträge
-func CleanIPCache(cache *IPCache) {
+func CleanIPCache(cache *IPCache) error {
+	return nil
 }
 
-func (c IPCacheC) NextIP(resultC chan IPItem) <-chan error {
+func (c IPCacheC) NextIP(resultC chan IPItemResponse) <-chan error {
 	errorC := make(chan error)
 	c <- IPCacheRequest{
 		Request:    1,

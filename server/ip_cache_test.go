@@ -1,5 +1,11 @@
 package main
 
+import (
+	"net"
+	"testing"
+	"time"
+)
+
 func Test_NextIP_OK(t *testing.T) {
 	resultC := make(chan IPItemResponse)
 
@@ -9,9 +15,12 @@ func Test_NextIP_OK(t *testing.T) {
 		To:   net.ParseIP("192.168.2.10"),
 	}
 
-	c := NewIPCache(spec, []net.IP{net.ParseIP("192.168.1.254")}, 5)
+	c, err := NewIPCache(spec, []IPItem{}, 5)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 	errC := c.NextIP(resultC)
-	err <- errC
+	err = <-errC
 	if err != nil {
 		t.Fatal(err.Error())
 	}
@@ -23,7 +32,7 @@ func Test_NextIP_OK(t *testing.T) {
 	}
 
 	expectIP := "192.168.2.1"
-	if result.IP != net.ParseIP(expectIP) {
+	if string(result.IP) != string(net.ParseIP(expectIP)) {
 		t.Fatal("Expect", expectIP, ", was", result.IP)
 	}
 
@@ -34,11 +43,11 @@ func Test_NextIP_OK(t *testing.T) {
 
 func Test_CleanIPCache(t *testing.T) {
 	ipCache := IPCache{
-		IPItem{
+		"1": IPItem{
 			IP:     net.ParseIP("192.168.1.1"),
 			Expire: time.Now().Add(-1),
 		},
-		IPItem{
+		"2": IPItem{
 			IP:     net.ParseIP("192.168.1.2"),
 			Expire: time.Now().Add(-1),
 		},

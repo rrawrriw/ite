@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 
-	"github.com/bradfitz/gomemcache/memcache"
 	"gopkg.in/mgo.v2/bson"
 )
 
@@ -44,12 +43,6 @@ func NewIP(appCtx AppContext, queue chan UDPPacket, resultC chan []byte, errorC 
 		return
 	}
 
-	mainIface, err := net.InterfaceByName("")
-	if err != nil {
-		errorC <- err
-		return
-	}
-
 	//ip, confirmID, err := NextIPEtcd()
 	//ip, confirmID, err := NextIPMemcache(ctx)
 
@@ -60,6 +53,6 @@ func NewIP(appCtx AppContext, queue chan UDPPacket, resultC chan []byte, errorC 
 	//Erzeuge Response
 }
 
-func NextIPMemcache(appCtx AppContext) (net.IP, string, error) {
-
+func NextIPCache(appCtx AppContext) (net.IP, string, error) {
+	return net.ParseIP("192.168.1.1"), "", nil
 }
