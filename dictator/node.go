@@ -29,7 +29,7 @@ type (
 	}
 )
 
-func NewHeartbeatTimeout(min, max int) (time.Duration, error) {
+func NewTimeout(min, max int) (time.Duration, error) {
 	minR := big.NewInt(int64(min))
 	maxR := big.NewInt(int64(max - min))
 	random, err := rand.Int(rand.Reader, maxR)
@@ -44,22 +44,30 @@ func NewHeartbeatTimeout(min, max int) (time.Duration, error) {
 
 func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 
-	conn, err := net.ListenUDP("udp", &readAddr)
+	connIn, err := net.ListenUDP("udp", &readAddr)
 	if err != nil {
-		l.Error.Fatalln(err.Error())
+		l.Error.Println(err.Error())
+		return
 	}
 
-	udpPacketC := make(chan UDPPacket)
+	connOut, err := net.DialUDP("udp", nil, &writeAddr)
+	if err != nil {
+		l.Error.Println(err.Error())
+		return
+	}
+
+	udpPacketInC := make(chan UDPPacket)
 	// Wait for udp packages
 	go func() {
+		defer connIn.Close()
 		for {
 			p := make([]byte, 1024)
-			s, rAddr, err := conn.ReadFromUDP(p)
+			s, rAddr, err := connIn.ReadFromUDP(p)
 			if err != nil {
 				l.Error.Println(err.Error())
 				continue
 			}
-			udpPacketC <- UDPPacket{
+			udpPacketInC <- UDPPacket{
 				RemoteAddr: rAddr,
 				Payload:    p,
 				Size:       s,
@@ -68,31 +76,88 @@ func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 		}
 	}()
 
+	udpPacketOutC := make(chan UDPPacket)
+	// Repeate UDP packages
+	go func() {
+		defer connOut.Close()
+		for udpPacket := range udpPacketOutC {
+			b, err := bson.Marshal(udpPacket)
+			if err != nil {
+				l.Error.Println(err.Error())
+				continue
+			}
+
+			_, err = connOut.WriteToUDP(b, &writeAddr)
+			if err != nil {
+				l.Error.Println(err.Error())
+				continue
+			}
+		}
+	}()
+
 	// Wait for DictatorPacket
 	go func() {
-		dictatorID := "1234"
-		timeout, err := NewHeartbeatTimeout(500, 1500)
+		nodeID := "1234"
+
+		// The Cannel to stop the dictator heartbeat goroutine
+		killDictatorC := make(chan bool)
+
+		// First wait if there already a dictator
+		timeout, err := NewTimeout(500, 1500)
 		if err != nil {
 			l.Error.Println(err.Error())
 			return
 		}
 		deadDictator := time.NewTimer(timeout)
+
 		for {
 			select {
-			case <-udpPacketC:
+			case <-udpPacketInC:
 				l.Debug.Println("Receive UDP packet")
 				deadDictator.Stop()
-				timeout, err := NewHeartbeatTimeout(500, 1500)
+				timeout, err := NewTimeout(500, 1500)
 				if err != nil {
 					l.Error.Println(err.Error())
 					return
 				}
 				deadDictator = time.NewTimer(timeout)
 			case <-deadDictator.C:
-				l.Debug.Println("Try to become a dictator")
+				l.Debug.Println("Time to enslave some people")
+				deadDictator.Stop()
+				err := DictatorHeartbeat(
+					nodeID,
+					killDictatorC,
+					udpPacketOutC,
+					l,
+				)
+				if err != nil {
+					l.Error.Println(err.Error())
+					return
+				}
+
+			}
+		}
+	}()
+
+}
+
+func DictatorHeartbeat(nodeID string, doneC chan bool, outputC chan UDPPacket, l Logger) error {
+	timeout, err := NewTimeout(100, 150)
+	if err != nil {
+		l.Error.Println(err.Error())
+		return err
+	}
+	greatDictator := time.NewTicker(timeout)
+	go func() {
+		for {
+			select {
+			case <-doneC:
+				greatDictator.Stop()
+				return
+			case <-greatDictator.C:
 				heartbeat := DictatorPayload{
 					Type:       1,
-					DictatorID: dictatorID,
+					DictatorID: nodeID,
 					Blob:       0,
 				}
 				p, err := bson.Marshal(heartbeat)
@@ -100,13 +165,13 @@ func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 					l.Error.Println(err.Error())
 					continue
 				}
-				_, err = conn.WriteToUDP(p, &writeAddr)
-				if err != nil {
-					l.Error.Println(err.Error())
-					continue
+				outputC <- UDPPacket{
+					Payload: p,
 				}
 			}
 		}
 	}()
+
+	return nil
 
 }
