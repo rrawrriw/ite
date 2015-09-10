@@ -10,6 +10,9 @@ import (
 )
 
 func Test_RunUDPInbox(t *testing.T) {
+
+	time.Sleep(500 * time.Millisecond)
+
 	testResult := make(chan error)
 
 	lAddr := net.UDPAddr{
@@ -50,15 +53,77 @@ func Test_RunUDPInbox(t *testing.T) {
 
 	//Test if server startetd
 	connOut, err := net.DialUDP("udp", nil, &lAddr)
-
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 	_, err = connOut.Write([]byte("1"))
 	if err != nil {
 		t.Fatal(err.Error())
+	}
+	defer connOut.Close()
+
+	err = <-testResult
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+}
+
+func Test_RunUDPOutbox(t *testing.T) {
+
+	time.Sleep(500 * time.Millisecond)
+
+	testResult := make(chan error)
+
+	lAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 12345,
+	}
+
+	conn, err := net.DialUDP("udp", nil, &lAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	conns := []*net.UDPConn{
+		conn,
+	}
+	ctx := NewContextWithConn(conns)
+	defer ctx.Done()
+
+	udpOut, err := UDPOutbox(ctx, conn)
+
+	connIn, err := net.ListenUDP("udp", &lAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	defer connIn.Close()
+
+	// Test if udp out sends udp packet
+	go func() {
+		payload := make([]byte, MaxUDPPacketSize)
+		_, _, err := connIn.ReadFromUDP(payload)
+		if err != nil {
+			testResult <- err
+		}
+		expect := make([]byte, MaxUDPPacketSize)
+		expect[0] = '1'
+		if !bytes.Equal(expect, payload) {
+			errMsg := fmt.Sprintf("Expect %v was %v", string(expect), string(payload))
+			testResult <- errors.New(errMsg)
+		}
+
+		testResult <- nil
+	}()
+
+	udpOut <- UDPPacket{
+		Payload: []byte("1"),
 	}
 
 	err = <-testResult
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+
+	time.Sleep(500 * time.Millisecond)
 
 }

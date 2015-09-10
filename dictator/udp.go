@@ -21,6 +21,7 @@ func UDPInbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
 				// Check if the done channel closed then shutdown goroutine
 				select {
 				case <-ctx.DoneChan:
+					ctx.Log.Debug.Println("UDPInbox shutdown")
 					close(udpIn)
 					return
 				default:
@@ -41,4 +42,24 @@ func UDPInbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
 
 	}()
 	return udpIn, nil
+}
+
+func UDPOutbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
+	udpOut := make(chan UDPPacket)
+	go func() {
+		for {
+			select {
+			case <-ctx.DoneChan:
+				ctx.Log.Debug.Println("UDPOutbox shutdown")
+				return
+			case packet := <-udpOut:
+				_, err := conn.Write(packet.Payload)
+				if err != nil {
+					ctx.Log.Error.Println(err.Error())
+					continue
+				}
+			}
+		}
+	}()
+	return udpOut, nil
 }
