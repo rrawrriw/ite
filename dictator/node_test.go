@@ -70,7 +70,9 @@ func Test_NodeBecomeDictator(t *testing.T) {
 		Port: 12346,
 	}
 
-	Node(wAddr, lAddr, MakeTestLogger())
+	gDoneC := make(chan struct{})
+	defer close(gDoneC)
+	Node(gDoneC, wAddr, lAddr, MakeTestLogger())
 
 	testResult := <-testResultC
 	if testResult != true {
@@ -170,7 +172,9 @@ func Test_OvertrhowDictator(t *testing.T) {
 		}
 	}()
 
-	Node(wAddr, lAddr, MakeTestLogger())
+	gDoneC := make(chan struct{})
+	defer close(gDoneC)
+	Node(gDoneC, wAddr, lAddr, MakeTestLogger())
 
 	testResult := <-testResultC
 	if testResult != true {

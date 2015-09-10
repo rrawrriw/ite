@@ -2,7 +2,6 @@ package dictator
 
 import (
 	"crypto/rand"
-	"log"
 	"math/big"
 	"net"
 	"time"
@@ -15,17 +14,6 @@ type (
 		Type       int
 		Blob       interface{}
 		DictatorID string
-	}
-
-	UDPPacket struct {
-		RemoteAddr *net.UDPAddr
-		Payload    []byte
-		Size       int
-	}
-
-	Logger struct {
-		Error *log.Logger
-		Debug *log.Logger
 	}
 )
 
@@ -42,7 +30,7 @@ func NewTimeout(min, max int) (time.Duration, error) {
 
 }
 
-func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
+func Node(doneC <-chan struct{}, readAddr, writeAddr net.UDPAddr, l Logger) {
 
 	connIn, err := net.ListenUDP("udp", &readAddr)
 	if err != nil {
@@ -57,8 +45,9 @@ func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 	}
 
 	udpPacketInC := make(chan UDPPacket)
-	// Wait for udp packages
+	// Wait for UDP packages
 	go func() {
+		l.Debug.Println("Start UDP packet handler")
 		defer connIn.Close()
 		for {
 			p := make([]byte, 1024)
@@ -79,6 +68,7 @@ func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 	udpPacketOutC := make(chan UDPPacket)
 	// Repeate UDP packages
 	go func() {
+		l.Debug.Println("Start UDP packets sender")
 		defer connOut.Close()
 		for udpPacket := range udpPacketOutC {
 			b, err := bson.Marshal(udpPacket)
@@ -112,6 +102,10 @@ func Node(readAddr, writeAddr net.UDPAddr, l Logger) {
 
 		for {
 			select {
+			case <-doneC:
+				l.Debug.Println("Goodbye node")
+				killDictatorC <- true
+				return
 			case <-udpPacketInC:
 				l.Debug.Println("Receive UDP packet")
 				deadDictator.Stop()
@@ -152,6 +146,7 @@ func DictatorHeartbeat(nodeID string, doneC chan bool, outputC chan UDPPacket, l
 		for {
 			select {
 			case <-doneC:
+				l.Debug.Println("piiiiiiiip")
 				greatDictator.Stop()
 				return
 			case <-greatDictator.C:
