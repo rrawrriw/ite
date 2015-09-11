@@ -235,7 +235,6 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 					for x := 1; ; x++ {
 						select {
 						case <-testerUDPIn:
-							ctx.Log.Debug.Println(x)
 							if x > 3 {
 								testResultC <- errors.New("Expect to receive no further heartbeats")
 							}
@@ -262,4 +261,105 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
+}
+
+func Test_ReadDictatorPayload_OK(t *testing.T) {
+	id := "1"
+
+	payload := DictatorPayload{
+		DictatorID: id,
+	}
+
+	dp, err := bson.Marshal(payload)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	packet := UDPPacket{
+		Payload: dp,
+	}
+
+	p, err := ReadDictatorPayload(packet)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	if p.DictatorID != id {
+		t.Fatal("Expect", id, "was", p.DictatorID)
+	}
+}
+
+func Test_ReadDictatorPayload_Fail(t *testing.T) {
+	packet := UDPPacket{
+		Payload: []byte(""),
+	}
+
+	_, err := ReadDictatorPayload(packet)
+	if err == nil {
+		t.Fatal("Expect func to return a error")
+	}
+}
+
+func Test_IsDictatorPayload_OK(t *testing.T) {
+	payload, err := bson.Marshal(
+		DictatorPayload{
+			DictatorID: "1",
+		},
+	)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	packet := UDPPacket{
+		Payload: payload,
+	}
+	if !IsDictatorPayload(packet) {
+		t.Fatal("Expect to be true")
+	}
+}
+
+func Test_IsDictatorPayload_Fail(t *testing.T) {
+	packet := UDPPacket{}
+	if IsDictatorPayload(packet) {
+		t.Fatal("Expect to be false")
+	}
+}
+
+func Test_IsThatMe_OK(t *testing.T) {
+	id := "1"
+	payload := DictatorPayload{
+		DictatorID: id,
+	}
+	if !IsThatMe(id, payload) {
+		t.Fatal("Expect to be me")
+	}
+}
+
+func Test_IsThatMe_Fail(t *testing.T) {
+	id := "1"
+	payload := DictatorPayload{
+		DictatorID: "2",
+	}
+	if IsThatMe(id, payload) {
+		t.Fatal("Expect not myself")
+	}
+}
+
+func Test_IsHeartbeat_OK(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 1,
+	}
+
+	if !IsHeartbeat(payload) {
+		t.Fatal("Expect to be heartbeat")
+	}
+}
+
+func Test_IsHeartbeat_Fail(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 2,
+	}
+
+	if IsHeartbeat(payload) {
+		t.Fatal("Expect not to be a heartbeat")
+	}
 }

@@ -38,39 +38,77 @@ func NewRandomTimeout(min, max int) (time.Duration, error) {
 
 }
 
-func IsThatMe(packet UDPPacket) bool {
-	return false
+func ReadDictatorPayload(packet UDPPacket) (DictatorPayload, error) {
+	payload := DictatorPayload{}
+	err := bson.Unmarshal(packet.Payload, &payload)
+	if err != nil {
+		return DictatorPayload{}, err
+	}
+
+	return payload, nil
 }
 
-func IsCommand(packet UDPPacket) bool {
-	return false
-}
+func IsDictatorPayload(packet UDPPacket) bool {
+	pd, err := ReadDictatorPayload(packet)
+	if err != nil {
+		return false
+	}
 
-func IsHeartbeat(packet UDPPacket) bool {
+	if pd.DictatorID == "" && pd.Type == 0 {
+		return false
+	}
+
 	return true
+}
+
+func IsThatMe(id string, payload DictatorPayload) bool {
+	if id == payload.DictatorID {
+		return true
+	}
+
+	return false
+}
+
+func IsCommand(payload DictatorPayload) bool {
+	return false
+}
+
+func IsHeartbeat(payload DictatorPayload) bool {
+	if payload.Type == 1 {
+		return true
+	}
+
+	return false
 }
 
 func (nodeCtx NodeContext) HandlePacket(packet UDPPacket) error {
 	l := nodeCtx.AppContext.Log
-	// Ignore myself
-	if IsThatMe(packet) {
-		return nil
-	}
-	// Make the command of the great dictator
-	if IsCommand(packet) {
-		return nil
-	}
-	// Reset heartbeat timeout
-	if IsHeartbeat(packet) {
-		nodeCtx.BecomeDictator.Stop()
-		timeout, err := NewRandomTimeout(500, 1500)
+	if IsDictatorPayload(packet) {
+		payload, err := ReadDictatorPayload(packet)
 		if err != nil {
-			l.Error.Println(err.Error())
+			return err
+		}
+
+		// Ignore myself
+		if IsThatMe(nodeCtx.NodeID, payload) {
 			return nil
 		}
-		nodeCtx.BecomeDictator = time.NewTimer(timeout)
+		// Make the command of the great dictator
+		if IsCommand(payload) {
+			return nil
+		}
+		// Reset heartbeat timeout
+		if IsHeartbeat(payload) {
+			timeout, err := NewRandomTimeout(500, 1500)
+			if err != nil {
+				l.Error.Println(err.Error())
+				return nil
+			}
+			nodeCtx.BecomeDictator.Reset(timeout)
+		}
+
+		nodeCtx.SuicideChan <- struct{}{}
 	}
-	nodeCtx.SuicideChan <- struct{}{}
 
 	return nil
 }
@@ -84,7 +122,7 @@ func (nodeCtx NodeContext) LoopNode() {
 			nodeCtx.SuicideChan <- struct{}{}
 			return
 		case packet := <-nodeCtx.UDPIn:
-			l.Debug.Println("Receive UDP packet")
+			l.Debug.Println("Receive UDP packet", nodeCtx.NodeID)
 			nodeCtx.HandlePacket(packet)
 		case <-nodeCtx.BecomeDictator.C:
 			l.Debug.Println("Time to enslave some people", nodeCtx.NodeID)
