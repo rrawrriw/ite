@@ -1,6 +1,8 @@
 package dictator
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -22,162 +24,227 @@ func MakeTestLogger() Logger {
 	return l
 }
 
-func Test_NodeBecomeDictator(t *testing.T) {
+func Test_AwakeDictator(t *testing.T) {
 
-	testResultC := make(chan bool)
+	// Alles ist Nebenläufig gebt ihnen die Chance zum beenden und Stopen
+	time.Sleep(1 * time.Second)
+
+	nodeListenAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 12345,
+	}
+
+	testerListenAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 12345,
+	}
+
+	connIn, err := net.ListenUDP("udp", &nodeListenAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	connOut, err := net.DialUDP("udp", nil, &testerListenAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	conns := []*net.UDPConn{
+		connIn,
+		connOut,
+	}
+	ctx := NewContextWithConn(conns)
+	defer ctx.Done()
+
+	udpIn, err := UDPInbox(ctx, connIn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	udpOut, err := UDPOutbox(ctx, connOut)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	testResultC := make(chan error)
 	timeout := time.After(2 * time.Second)
-	payloadC := make(chan []byte)
+
+	killDictatorC := make(chan struct{})
+
+	AwakeDictator(ctx, "1234", udpOut, killDictatorC)
 
 	// Receive DictatorHearbeate
 	go func() {
 		select {
 		case <-timeout:
-			testResultC <- false
-		case payload := <-payloadC:
+			testResultC <- errors.New("Test runs out of time")
+		case packet := <-udpIn:
 			p := DictatorPayload{}
-			err := bson.Unmarshal(payload, &p)
+			err := bson.Unmarshal(packet.Payload, &p)
 			if err != nil {
-				t.Fatal(err.Error())
+				testResultC <- err
 			}
 			if p.Type != 1 {
-				testResultC <- false
+				testResultC <- errors.New("Wrong message type")
 			}
-			testResultC <- true
+
+			if p.DictatorID != "1234" {
+				errMsg := fmt.Sprintf("Expect 1234 was %v", p.DictatorID)
+				testResultC <- errors.New(errMsg)
+
+			}
+			testResultC <- nil
 		}
 	}()
 
-	lAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
-		Port: 12345,
-	}
-	conn, err := net.ListenUDP("udp", &lAddr)
+	err = <-testResultC
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	defer conn.Close()
 
-	go func() {
-		payload := make([]byte, 1024)
-		_, _, err := conn.ReadFromUDP(payload)
-		if err != nil {
-			t.Fatal(err.Error())
-		}
-		payloadC <- payload
-	}()
-
-	wAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
-		Port: 12346,
-	}
-
-	gDoneC := make(chan struct{})
-	defer close(gDoneC)
-	Node(gDoneC, wAddr, lAddr, MakeTestLogger())
-
-	testResult := <-testResultC
-	if testResult != true {
-		t.Fatal("Expect a heartbeat within a time unit")
-	}
+	// Alles ist Nebenläufig gebt ihnen die Chance zum beenden und Stopen
+	time.Sleep(1 * time.Second)
 
 }
 
-func Test_OvertrhowDictator(t *testing.T) {
+// Dieser Test prüft ob eine gestartet Node welche nach einem Timeout
+// zu einem Diktator wurde diesen Status wieder abgibt und ebenso aufhört
+// Heartbeats zu senden nachdem eine andere Node einen Heartbeat gesendet
+// hat. Es gilt zu beachten da alles Nebenläufig statt findet so kann es
+// vorkommen das der Tester weiter Heartbeats empfängt nachdem dieser
+// den gefakten Heartbeat gesendet hat. Dieses verhalten muss beim
+// Testen beachtet werden. Es gibt dazu aber einen weiteren Hinweis
+// im Quellcode.
+func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 
-	nodeID := "1"
-	testResultC := make(chan bool)
-	timeout := time.After(3 * time.Second)
-	payloadC := make(chan []byte)
-	udpOutC := make(chan UDPPacket)
-	sendHeadbeat := time.Tick(150 * time.Millisecond)
-
-	lAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
+	nodeID := "1234"
+	testResultC := make(chan error)
+	nodeListenAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
 		Port: 12345,
 	}
+	nodeListenConn, err := net.ListenUDP("udp", &nodeListenAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
-	wAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
+	nodeSendAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
 		Port: 12346,
 	}
+	nodeSendConn, err := net.DialUDP("udp", nil, &nodeSendAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
-	// Test node behavoir
+	testerListenAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 12346,
+	}
+	testerListenConn, err := net.ListenUDP("udp", &testerListenAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	testerSendAddr := net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 12345,
+	}
+	testerSendConn, err := net.DialUDP("udp", nil, &testerSendAddr)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	conns := []*net.UDPConn{
+		nodeListenConn,
+		nodeSendConn,
+		testerListenConn,
+		testerSendConn,
+	}
+	ctx := NewContextWithConn(conns)
+	defer ctx.Done()
+
+	nodeUDPIn, err := UDPInbox(ctx, nodeListenConn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	nodeUDPOut, err := UDPOutbox(ctx, nodeSendConn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	testerUDPIn, err := UDPInbox(ctx, testerListenConn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	testerUDPOut, err := UDPOutbox(ctx, testerSendConn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	// Test timeout
+	// Läuft die Zeit für den Test ab und es wurde kein Fehler ausgelöst
+	// wurde der Test bestanden.
+	time.AfterFunc(
+		5*time.Second,
+		func() {
+			testResultC <- nil
+		},
+	)
+
+	killDictator := make(chan struct{})
+
+	// Der erster Test-Schritt, es wird gewartet bis die Node Heartbeats
+	// sendet. Daraufhin werden vom Tester ebenfalls Heartbeats gesendet
+	// Daraufhin dürfen von der Node keine weitern Heartbeats kommen.
+	// Zu beachten gilt was in der Einführung über nebenläufigkeit gesagt
+	// wurde
 	go func() {
 		for {
 			select {
-			case <-timeout:
-				testResultC <- true
-			case payload := <-payloadC:
+			case packet := <-testerUDPIn:
 				p := DictatorPayload{}
-				err := bson.Unmarshal(payload, &p)
+				err := bson.Unmarshal(packet.Payload, &p)
 				if err != nil {
-					t.Fatal(err.Error())
+					testResultC <- err
 				}
-				if p.Type == 1 {
-					testResultC <- false
+				if p.Type != 1 {
+					testResultC <- errors.New("Wrong message type")
 				}
-			case <-sendHeadbeat:
-				heartbeat := DictatorPayload{
-					Type:       1,
-					DictatorID: nodeID,
-					Blob:       0,
-				}
-				payload, err := bson.Marshal(heartbeat)
-				if err != nil {
-					t.Fatal(err.Error())
-				}
-				packet := UDPPacket{
-					RemoteAddr: &wAddr,
-					Payload:    payload,
-				}
-				udpOutC <- packet
+
+				// Starte mit senden von Heartbeats
+				AwakeDictator(ctx, nodeID, testerUDPOut, killDictator)
+				// Starte Schritt 2 test Tests
+				// warte ob mehr als 3 weiter Heartbeats
+				// von der Node gesendet werden.
+				go func() {
+					for x := 1; ; x++ {
+						select {
+						case <-testerUDPIn:
+							ctx.Log.Debug.Println(x)
+							if x > 3 {
+								testResultC <- errors.New("Expect to receive no further heartbeats")
+							}
+
+						}
+					}
+				}()
+
+				// Beende den ersten Schritt des Tests
+				// damit dieser keine weiteren UDP Pakete
+				// empfängt da ansont goroutines des 2 Schritts
+				// mehrfach ausgeführt werden.
+				return
 			}
 		}
 	}()
 
-	inConn, err := net.ListenUDP("udp", &lAddr)
+	Node(ctx, nodeUDPIn, nodeUDPOut)
+
+	err = <-testResultC
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	defer inConn.Close()
 
-	tAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
-		Port: 12347,
-	}
-	outConn, err := net.DialUDP("udp", &tAddr, &wAddr)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	defer outConn.Close()
-
-	// Manage incoming UDP packets
-	go func() {
-		for {
-			payload := make([]byte, 1024)
-			_, _, err := inConn.ReadFromUDP(payload)
-			if err != nil {
-				t.Fatal(err.Error())
-			}
-			payloadC <- payload
-		}
-	}()
-
-	// Manage outgoing UDP packets
-	go func() {
-		for {
-			select {
-			case p := <-udpOutC:
-				outConn.WriteToUDP(p.Payload, p.RemoteAddr)
-			}
-		}
-	}()
-
-	gDoneC := make(chan struct{})
-	defer close(gDoneC)
-	Node(gDoneC, wAddr, lAddr, MakeTestLogger())
-
-	testResult := <-testResultC
-	if testResult != true {
-		t.Fatal("Expect no heartbeat within a time unit")
-	}
 }

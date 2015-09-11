@@ -2,8 +2,8 @@ package dictator
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
-	"net"
 	"time"
 
 	"gopkg.in/mgo.v2/bson"
@@ -30,102 +30,51 @@ func NewTimeout(min, max int) (time.Duration, error) {
 
 }
 
-func Node(doneC <-chan struct{}, readAddr, writeAddr net.UDPAddr, l Logger) {
-
-	connIn, err := net.ListenUDP("udp", &readAddr)
-	if err != nil {
-		l.Error.Println(err.Error())
-		return
-	}
-
-	connOut, err := net.DialUDP("udp", nil, &writeAddr)
-	if err != nil {
-		l.Error.Println(err.Error())
-		return
-	}
-
-	udpPacketInC := make(chan UDPPacket)
-	// Wait for UDP packages
-	go func() {
-		l.Debug.Println("Start UDP packet handler")
-		defer connIn.Close()
-		for {
-			p := make([]byte, 1024)
-			s, rAddr, err := connIn.ReadFromUDP(p)
-			if err != nil {
-				l.Error.Println(err.Error())
-				continue
-			}
-			udpPacketInC <- UDPPacket{
-				RemoteAddr: rAddr,
-				Payload:    p,
-				Size:       s,
-			}
-
-		}
-	}()
-
-	udpPacketOutC := make(chan UDPPacket)
-	// Repeate UDP packages
-	go func() {
-		l.Debug.Println("Start UDP packets sender")
-		defer connOut.Close()
-		for udpPacket := range udpPacketOutC {
-			b, err := bson.Marshal(udpPacket)
-			if err != nil {
-				l.Error.Println(err.Error())
-				continue
-			}
-
-			_, err = connOut.WriteToUDP(b, &writeAddr)
-			if err != nil {
-				l.Error.Println(err.Error())
-				continue
-			}
-		}
-	}()
+func Node(ctx Context, udpIn, udpOut chan UDPPacket) {
 
 	// Wait for DictatorPacket
 	go func() {
 		nodeID := "1234"
 
 		// The Cannel to stop the dictator heartbeat goroutine
-		killDictatorC := make(chan bool)
+		killDictatorC := make(chan struct{})
 
 		// First wait if there already a dictator
 		timeout, err := NewTimeout(500, 1500)
 		if err != nil {
-			l.Error.Println(err.Error())
+			ctx.Log.Error.Println(err.Error())
 			return
 		}
+		fmt.Println("Timeout:", timeout)
 		deadDictator := time.NewTimer(timeout)
 
 		for {
 			select {
-			case <-doneC:
-				l.Debug.Println("Goodbye node")
-				killDictatorC <- true
+			case <-ctx.DoneChan:
+				ctx.Log.Debug.Println("Goodbye node", nodeID)
+				killDictatorC <- struct{}{}
 				return
-			case <-udpPacketInC:
-				l.Debug.Println("Receive UDP packet")
+			case <-udpIn:
+				ctx.Log.Debug.Println("Receive UDP packet")
 				deadDictator.Stop()
+				killDictatorC <- struct{}{}
 				timeout, err := NewTimeout(500, 1500)
 				if err != nil {
-					l.Error.Println(err.Error())
+					ctx.Log.Error.Println(err.Error())
 					return
 				}
 				deadDictator = time.NewTimer(timeout)
 			case <-deadDictator.C:
-				l.Debug.Println("Time to enslave some people")
+				ctx.Log.Debug.Println("Time to enslave some people", nodeID)
 				deadDictator.Stop()
-				err := DictatorHeartbeat(
+				err := AwakeDictator(
+					ctx,
 					nodeID,
+					udpOut,
 					killDictatorC,
-					udpPacketOutC,
-					l,
 				)
 				if err != nil {
-					l.Error.Println(err.Error())
+					ctx.Log.Error.Println(err.Error())
 					return
 				}
 
@@ -135,32 +84,37 @@ func Node(doneC <-chan struct{}, readAddr, writeAddr net.UDPAddr, l Logger) {
 
 }
 
-func DictatorHeartbeat(nodeID string, doneC chan bool, outputC chan UDPPacket, l Logger) error {
+func AwakeDictator(ctx Context, nodeID string, udpOut chan UDPPacket, killDictatorC chan struct{}) error {
+	ctx.Log.Debug.Println("Long live the dictator", nodeID)
 	timeout, err := NewTimeout(100, 150)
 	if err != nil {
-		l.Error.Println(err.Error())
+		ctx.Log.Error.Println(err.Error())
 		return err
 	}
-	greatDictator := time.NewTicker(timeout)
+	dictatorHeartbeat := time.NewTicker(timeout)
 	go func() {
 		for {
 			select {
-			case <-doneC:
-				l.Debug.Println("piiiiiiiip")
-				greatDictator.Stop()
+			case <-ctx.DoneChan:
+				ctx.Log.Debug.Println("The world shutdown", nodeID)
+				dictatorHeartbeat.Stop()
 				return
-			case <-greatDictator.C:
-				heartbeat := DictatorPayload{
+			case <-killDictatorC:
+				ctx.Log.Debug.Println("Dictator must die", nodeID)
+				dictatorHeartbeat.Stop()
+				return
+			case <-dictatorHeartbeat.C:
+				heartbeatPacket := DictatorPayload{
 					Type:       1,
 					DictatorID: nodeID,
 					Blob:       0,
 				}
-				p, err := bson.Marshal(heartbeat)
+				p, err := bson.Marshal(heartbeatPacket)
 				if err != nil {
-					l.Error.Println(err.Error())
+					ctx.Log.Error.Println(err.Error())
 					continue
 				}
-				outputC <- UDPPacket{
+				udpOut <- UDPPacket{
 					Payload: p,
 				}
 			}

@@ -18,7 +18,10 @@ func NewContextWithConn(conns []*net.UDPConn) Context {
 	doneF := func() {
 		close(doneC)
 		for _, c := range conns {
-			c.Close()
+			err := c.Close()
+			if err != nil {
+				panic(err.Error())
+			}
 		}
 	}
 

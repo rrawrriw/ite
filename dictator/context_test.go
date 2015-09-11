@@ -9,6 +9,8 @@ import (
 
 func Test_ContextCloseFuncWithConn(t *testing.T) {
 
+	time.Sleep(1 * time.Second)
+
 	testResult := make(chan error)
 
 	conns := make([]*net.UDPConn, 3)
@@ -46,14 +48,22 @@ func Test_ContextCloseFuncWithConn(t *testing.T) {
 			IP:   net.ParseIP("127.0.0.1"),
 			Port: 12345 + x,
 		}
-		_, err := net.ListenUDP("udp", &a)
+		c, err := net.ListenUDP("udp", &a)
 		if err != nil {
 			t.Fatal(err.Error())
 		}
+
+		err = c.Close()
+		if err != nil {
+			t.Fatal(err.Error())
+		}
+
 	}
 
 	err := <-testResult
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+
+	time.Sleep(1 * time.Second)
 }
