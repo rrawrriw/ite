@@ -26,7 +26,6 @@ func MakeTestLogger() Logger {
 
 func Test_AwakeDictator(t *testing.T) {
 
-	// Alles ist Nebenläufig gebt ihnen die Chance zum beenden und Stopen
 	time.Sleep(1 * time.Second)
 
 	nodeListenAddr := net.UDPAddr{
@@ -70,7 +69,14 @@ func Test_AwakeDictator(t *testing.T) {
 
 	killDictatorC := make(chan struct{})
 
-	AwakeDictator(ctx, "1234", udpOut, killDictatorC)
+	dictatorID := "1234"
+	nodeCtx := NodeContext{
+		AppContext:  ctx,
+		NodeID:      dictatorID,
+		UDPOut:      udpOut,
+		SuicideChan: killDictatorC,
+	}
+	nodeCtx.AwakeDictator()
 
 	// Receive DictatorHearbeate
 	go func() {
@@ -87,8 +93,8 @@ func Test_AwakeDictator(t *testing.T) {
 				testResultC <- errors.New("Wrong message type")
 			}
 
-			if p.DictatorID != "1234" {
-				errMsg := fmt.Sprintf("Expect 1234 was %v", p.DictatorID)
+			if p.DictatorID != dictatorID {
+				errMsg := fmt.Sprintf("Expect %v was %v", dictatorID, p.DictatorID)
 				testResultC <- errors.New(errMsg)
 
 			}
@@ -101,7 +107,6 @@ func Test_AwakeDictator(t *testing.T) {
 		t.Fatal(err.Error())
 	}
 
-	// Alles ist Nebenläufig gebt ihnen die Chance zum beenden und Stopen
 	time.Sleep(1 * time.Second)
 
 }
@@ -116,7 +121,9 @@ func Test_AwakeDictator(t *testing.T) {
 // im Quellcode.
 func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 
-	nodeID := "1234"
+	time.Sleep(1 * time.Second)
+
+	nodeID := "123"
 	testResultC := make(chan error)
 	nodeListenAddr := net.UDPAddr{
 		IP:   net.ParseIP("127.0.0.1"),
@@ -214,7 +221,13 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 				}
 
 				// Starte mit senden von Heartbeats
-				AwakeDictator(ctx, nodeID, testerUDPOut, killDictator)
+				nodeCtx := NodeContext{
+					AppContext:  ctx,
+					NodeID:      nodeID,
+					UDPOut:      testerUDPOut,
+					SuicideChan: killDictator,
+				}
+				nodeCtx.AwakeDictator()
 				// Starte Schritt 2 test Tests
 				// warte ob mehr als 3 weiter Heartbeats
 				// von der Node gesendet werden.
@@ -246,5 +259,7 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+
+	time.Sleep(1 * time.Second)
 
 }
