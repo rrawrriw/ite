@@ -69,12 +69,20 @@ func Test_AwakeDictator(t *testing.T) {
 
 	killDictatorC := make(chan struct{})
 
+	mission := MissionSpecs{
+		Mission: func(NodeContext) {
+			go func() {
+			}()
+		},
+	}
+
 	dictatorID := "1234"
 	nodeCtx := NodeContext{
 		AppContext:  ctx,
 		NodeID:      dictatorID,
 		UDPOut:      udpOut,
 		SuicideChan: killDictatorC,
+		Mission:     mission,
 	}
 	nodeCtx.AwakeDictator()
 
@@ -109,6 +117,170 @@ func Test_AwakeDictator(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
+}
+
+// Wird der Diktator aufgeweckt start seine Mission.
+// Dieser Test prüft ob die übergeben Mission gestart wird
+func Test_ExecDictatorCommand_OK(t *testing.T) {
+
+	testResult := make(chan error)
+
+	// DictatorMission
+	mission := func(nCtx NodeContext) {
+		// Muss goroutine starten damit weiterhin heartbeats
+		// versendet werden. Ebenso sollte appContext.DoneChan
+		// beachtet werden. Sowie SuicideChan.
+		go func() {
+			// Beende Dictator goroutine
+			defer func() {
+				nCtx.SuicideChan <- struct{}{}
+			}()
+			testResult <- nil
+		}()
+	}
+
+	specs := MissionSpecs{
+		Mission: mission,
+	}
+
+	suicide := make(chan struct{})
+	nodeCtx := NodeContext{
+		AppContext:  NewContext(),
+		UDPOut:      make(chan UDPPacket),
+		SuicideChan: suicide,
+		Mission:     specs,
+	}
+
+	nodeCtx.AwakeDictator()
+
+	err := <-testResult
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+}
+
+// Erhält ein Sklave ein Kommando von einem Diktator muss überprüft werden
+// ob dieses bekannt ist und draufhin ausgeführt werden
+func Test_ExecSlaveCommand_OK(t *testing.T) {
+
+	testOK := false
+
+	h := func(nCtx NodeContext) error {
+		testOK = true
+		return nil
+	}
+
+	cmdRouter := CommandRouter{}
+	cmdRouter.AddHandler("test", h)
+
+	specs := MissionSpecs{
+		CommandRouter: cmdRouter,
+	}
+
+	suicide := make(chan struct{})
+	nodeCtx := NodeContext{
+		NodeID:      "1",
+		AppContext:  NewContext(),
+		UDPOut:      make(chan UDPPacket),
+		SuicideChan: suicide,
+		Mission:     specs,
+	}
+
+	cmdBlob := CommandBlob{
+		Name: "test",
+	}
+
+	blob, err := bson.Marshal(cmdBlob)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	cmdPayload := DictatorPayload{
+		Type: 2,
+		Blob: blob,
+	}
+
+	payload, err := bson.Marshal(cmdPayload)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	packet := UDPPacket{
+		Payload: payload,
+	}
+
+	err = nodeCtx.HandlePacket(packet)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if !testOK {
+		t.Fatal("Expect to be true")
+	}
+}
+
+// Teste Reaktion auf CommandResponse Diktator seitig.
+func Test_ExecCommandOfResponse_OK(t *testing.T) {
+	testResult := make(chan error)
+	responseChan := make(chan DictatorPayload)
+
+	m := func(c NodeContext) {
+		go func() {
+			select {
+			case <-responseChan:
+				testResult <- nil
+			}
+		}()
+	}
+
+	specs := MissionSpecs{
+		Mission:      m,
+		ResponseChan: responseChan,
+	}
+
+	suicide := make(chan struct{})
+
+	nodeCtx := NodeContext{
+		NodeID:      "1",
+		AppContext:  NewContext(),
+		UDPOut:      make(chan UDPPacket),
+		SuicideChan: suicide,
+		Mission:     specs,
+	}
+
+	commandResponseBlob := CommandResponseBlob{
+		NodeID: "1234",
+		Status: 1,
+	}
+	blob, err := bson.Marshal(commandResponseBlob)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	commandResponse := DictatorPayload{
+		Type:       3,
+		DictatorID: "1",
+		Blob:       blob,
+	}
+	payload, err := bson.Marshal(commandResponse)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	packet := UDPPacket{
+		Payload: payload,
+	}
+
+	m(nodeCtx)
+
+	err = nodeCtx.HandlePacket(packet)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	err = <-testResult
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 }
 
 // Dieser Test prüft ob eine gestartet Node welche nach einem Timeout
@@ -202,6 +374,13 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 
 	killDictator := make(chan struct{})
 
+	missionSpecs := MissionSpecs{
+		Mission: func(NodeContext) {
+			go func() {
+			}()
+		},
+	}
+
 	// Der erster Test-Schritt, es wird gewartet bis die Node Heartbeats
 	// sendet. Daraufhin werden vom Tester ebenfalls Heartbeats gesendet
 	// Daraufhin dürfen von der Node keine weitern Heartbeats kommen.
@@ -225,6 +404,7 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 					AppContext:  ctx,
 					NodeID:      nodeID,
 					UDPOut:      testerUDPOut,
+					Mission:     missionSpecs,
 					SuicideChan: killDictator,
 				}
 				nodeCtx.AwakeDictator()
@@ -252,7 +432,7 @@ func Test_NodeBecomeSlaveAfterReceivedDictatorHeartbeat(t *testing.T) {
 		}
 	}()
 
-	Node(ctx, nodeUDPIn, nodeUDPOut)
+	Node(ctx, nodeUDPIn, nodeUDPOut, missionSpecs)
 
 	err = <-testResultC
 	if err != nil {
@@ -303,7 +483,7 @@ func Test_ReadDictatorPayload_Fail(t *testing.T) {
 func Test_IsDictatorPayload_OK(t *testing.T) {
 	payload, err := bson.Marshal(
 		DictatorPayload{
-			DictatorID: "1",
+			Type: 1,
 		},
 	)
 	if err != nil {
@@ -319,6 +499,40 @@ func Test_IsDictatorPayload_OK(t *testing.T) {
 
 func Test_IsDictatorPayload_Fail(t *testing.T) {
 	packet := UDPPacket{}
+	if IsDictatorPayload(packet) {
+		t.Fatal("Expect to be false")
+	}
+}
+
+func Test_IsDictatorPayload_Fail2(t *testing.T) {
+	payload, err := bson.Marshal(
+		DictatorPayload{
+			Type: 5,
+		},
+	)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	packet := UDPPacket{
+		Payload: payload,
+	}
+	if IsDictatorPayload(packet) {
+		t.Fatal("Expect to be false")
+	}
+}
+
+func Test_IsDictatorPayload_Fail3(t *testing.T) {
+	payload, err := bson.Marshal(
+		DictatorPayload{
+			Type: 0,
+		},
+	)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	packet := UDPPacket{
+		Payload: payload,
+	}
 	if IsDictatorPayload(packet) {
 		t.Fatal("Expect to be false")
 	}
@@ -344,6 +558,14 @@ func Test_IsThatMe_Fail(t *testing.T) {
 	}
 }
 
+func Test_IsThatMe_Fail2(t *testing.T) {
+	id := "1"
+	payload := DictatorPayload{}
+	if IsThatMe(id, payload) {
+		t.Fatal("Expect not myself")
+	}
+}
+
 func Test_IsHeartbeat_OK(t *testing.T) {
 	payload := DictatorPayload{
 		Type: 1,
@@ -361,5 +583,45 @@ func Test_IsHeartbeat_Fail(t *testing.T) {
 
 	if IsHeartbeat(payload) {
 		t.Fatal("Expect not to be a heartbeat")
+	}
+}
+
+func Test_IsCommand_OK(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 2,
+	}
+
+	if !IsCommand(payload) {
+		t.Fatal("Expect to be a command")
+	}
+}
+
+func Test_IsCommand_Fail(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 3,
+	}
+
+	if IsCommand(payload) {
+		t.Fatal("Expect not to be a command")
+	}
+}
+
+func Test_IsCommandResponse_OK(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 3,
+	}
+
+	if !IsCommandResponse(payload) {
+		t.Fatal("Expect to be a command response")
+	}
+}
+
+func Test_IsCommandResponse_Fail(t *testing.T) {
+	payload := DictatorPayload{
+		Type: 4,
+	}
+
+	if IsCommandResponse(payload) {
+		t.Fatal("Expect not to be a command response")
 	}
 }

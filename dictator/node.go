@@ -2,6 +2,7 @@ package dictator
 
 import (
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"time"
 
@@ -11,17 +12,35 @@ import (
 type (
 	DictatorPayload struct {
 		Type       int
-		Blob       interface{}
+		Blob       []byte
 		DictatorID string
 	}
 
+	// Gibt vor welchen Befehl die Nodes ausfürhen sollen
+	CommandBlob struct {
+		Name string
+	}
+
+	// Gibt zurück ob Befehl erfolgreich ausgführt wurde
+	CommandResponseBlob struct {
+		NodeID string
+		Status int
+	}
+
 	NodeContext struct {
-		NodeID         string
-		BecomeDictator *time.Timer
-		SuicideChan    chan struct{}
-		AppContext     Context
-		UDPIn          chan UDPPacket
-		UDPOut         chan UDPPacket
+		NodeID          string
+		BecomeDictator  *time.Timer
+		SuicideChan     chan struct{}
+		AppContext      Context
+		UDPIn           chan UDPPacket
+		UDPOut          chan UDPPacket
+		Mission         MissionSpecs
+		IsDictatorAlive bool
+	}
+
+	AliveChan struct {
+		Q <-chan struct{}
+		A chan bool
 	}
 )
 
@@ -54,7 +73,7 @@ func IsDictatorPayload(packet UDPPacket) bool {
 		return false
 	}
 
-	if pd.DictatorID == "" && pd.Type == 0 {
+	if 1 > pd.Type || pd.Type > 4 {
 		return false
 	}
 
@@ -70,6 +89,18 @@ func IsThatMe(id string, payload DictatorPayload) bool {
 }
 
 func IsCommand(payload DictatorPayload) bool {
+	if payload.Type == 2 {
+		return true
+	}
+
+	return false
+}
+
+func IsCommandResponse(payload DictatorPayload) bool {
+	if payload.Type == 3 {
+		return true
+	}
+
 	return false
 }
 
@@ -89,25 +120,61 @@ func (nodeCtx NodeContext) HandlePacket(packet UDPPacket) error {
 			return err
 		}
 
-		// Ignore myself
+		// Ignore myself except it is a CommandResposne
 		if IsThatMe(nodeCtx.NodeID, payload) {
-			return nil
+			if !IsCommandResponse(payload) {
+				return nil
+			}
 		}
+
 		// Make the command of the great dictator
 		if IsCommand(payload) {
-			return nil
+			// When a other dictator take over we have to die
+			// and become a slave
+			if nodeCtx.IsDictatorAlive {
+				nodeCtx.SuicideChan <- struct{}{}
+			}
+
+			r := nodeCtx.Mission.CommandRouter
+			blob := CommandBlob{}
+			err := bson.Unmarshal(payload.Blob, &blob)
+			if err != nil {
+				return err
+			}
+			fun, ok := r.FindHandler(blob.Name)
+			if !ok {
+				return errors.New("Cannot find CommandHandler")
+			}
+			return fun(nodeCtx)
 		}
+
+		// Just care about CommandResponse of my commands
+		if IsCommandResponse(payload) {
+			if IsThatMe(nodeCtx.NodeID, payload) {
+				nodeCtx.Mission.ResponseChan <- payload
+				return nil
+			}
+
+			return errors.New("Not my Command")
+		}
+
 		// Reset heartbeat timeout
 		if IsHeartbeat(payload) {
+			// When a other dictator take over we have to die
+			// and become a slave
+			if nodeCtx.IsDictatorAlive {
+				nodeCtx.SuicideChan <- struct{}{}
+			}
+
 			timeout, err := NewRandomTimeout(500, 1500)
 			if err != nil {
 				l.Error.Println(err.Error())
-				return nil
+				return err
 			}
 			nodeCtx.BecomeDictator.Reset(timeout)
+			return nil
 		}
 
-		nodeCtx.SuicideChan <- struct{}{}
 	}
 
 	return nil
@@ -115,6 +182,9 @@ func (nodeCtx NodeContext) HandlePacket(packet UDPPacket) error {
 
 func (nodeCtx NodeContext) LoopNode() {
 	l := nodeCtx.AppContext.Log
+	var err error
+	var dictatorIsDead <-chan struct{}
+
 	for {
 		select {
 		case <-nodeCtx.AppContext.DoneChan:
@@ -127,28 +197,37 @@ func (nodeCtx NodeContext) LoopNode() {
 		case <-nodeCtx.BecomeDictator.C:
 			l.Debug.Println("Time to enslave some people", nodeCtx.NodeID)
 			nodeCtx.BecomeDictator.Stop()
-			err := nodeCtx.AwakeDictator()
+			dictatorIsDead, err = nodeCtx.AwakeDictator()
+			nodeCtx.IsDictatorAlive = true
 			if err != nil {
 				l.Error.Println(err.Error())
 				return
 			}
+		case <-dictatorIsDead:
+			nodeCtx.IsDictatorAlive = false
 
 		}
 	}
 }
 
-func (nodeCtx NodeContext) AwakeDictator() error {
+func (nodeCtx NodeContext) AwakeDictator() (<-chan struct{}, error) {
 	l := nodeCtx.AppContext.Log
 	nodeID := nodeCtx.NodeID
+
+	dictatorIsDead := make(chan struct{})
 
 	l.Debug.Println("Long live the dictator", nodeID)
 
 	timeout, err := NewRandomTimeout(100, 150)
 	if err != nil {
 		l.Error.Println(err.Error())
-		return err
+		return nil, err
 	}
 	dictatorHeartbeat := time.NewTicker(timeout)
+
+	// Run mission impossible
+	nodeCtx.Mission.Mission(nodeCtx)
+
 	go func() {
 		for {
 			select {
@@ -159,12 +238,15 @@ func (nodeCtx NodeContext) AwakeDictator() error {
 			case <-nodeCtx.SuicideChan:
 				l.Debug.Println("Dictator must die", nodeID)
 				dictatorHeartbeat.Stop()
+				dictatorIsDead <- struct{}{}
 				return
 			case <-dictatorHeartbeat.C:
+				// It's time to say hello to the people
+				// due to they don't forget us
 				heartbeatPacket := DictatorPayload{
 					Type:       1,
 					DictatorID: nodeID,
-					Blob:       0,
+					Blob:       []byte{},
 				}
 				p, err := bson.Marshal(heartbeatPacket)
 				if err != nil {
@@ -178,11 +260,11 @@ func (nodeCtx NodeContext) AwakeDictator() error {
 		}
 	}()
 
-	return nil
+	return dictatorIsDead, nil
 
 }
 
-func Node(ctx Context, udpIn, udpOut chan UDPPacket) {
+func Node(ctx Context, udpIn, udpOut chan UDPPacket, missionSpecs MissionSpecs) {
 
 	// Wait for DictatorPacket
 	go func() {
@@ -195,12 +277,14 @@ func Node(ctx Context, udpIn, udpOut chan UDPPacket) {
 		}
 
 		nodeCtx := NodeContext{
-			NodeID:         "1234",
-			SuicideChan:    make(chan struct{}),
-			BecomeDictator: time.NewTimer(timeout),
-			UDPIn:          udpIn,
-			UDPOut:         udpOut,
-			AppContext:     ctx,
+			NodeID:          "1234",
+			SuicideChan:     make(chan struct{}),
+			BecomeDictator:  time.NewTimer(timeout),
+			UDPIn:           udpIn,
+			UDPOut:          udpOut,
+			AppContext:      ctx,
+			Mission:         missionSpecs,
+			IsDictatorAlive: false,
 		}
 
 		nodeCtx.LoopNode()

@@ -32,3 +32,18 @@ func NewContextWithConn(conns []*net.UDPConn) Context {
 		Log:      NewLogger(os.Stderr, os.Stdout),
 	}
 }
+
+func NewContext() Context {
+	doneC := make(chan struct{})
+
+	doneF := func() {
+		close(doneC)
+	}
+
+	return Context{
+		Done:     doneF,
+		DoneChan: doneC,
+		Err:      nil,
+		Log:      NewLogger(os.Stderr, os.Stdout),
+	}
+}
