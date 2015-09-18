@@ -16,6 +16,8 @@ import (
 
 const MaxUDPPacketSize = 1024
 
+var PayloadError = errors.New("Payload error")
+
 type UDPPacket struct {
 	RemoteAddr *net.UDPAddr
 	Payload    []byte
@@ -89,26 +91,6 @@ func NewContext(conns []*net.UDPConn, timeout *time.Timer) Context {
 		Timeout:  timeout,
 		Log:      NewLogger(os.Stderr, os.Stdout),
 	}
-}
-
-func UDPOutbox(ctx Context, conn *net.UDPConn, buf int) (chan UDPPacket, error) {
-	udpOut := make(chan UDPPacket, buf)
-	go func() {
-		for {
-			select {
-			case <-ctx.DoneChan:
-				ctx.Log.Debug.Println("UDPOutbox shutdown")
-				return
-			case packet := <-udpOut:
-				_, err := conn.Write(packet.Payload)
-				if err != nil {
-					ctx.Log.Error.Println(err.Error())
-					continue
-				}
-			}
-		}
-	}()
-	return udpOut, nil
 }
 
 func UDPInbox(ctx Context, conn *net.UDPConn, buf int) (chan UDPPacket, error) {
@@ -296,9 +278,9 @@ func MakeClientPayload(specs DHCPSpecs) ([]byte, error) {
 
 }
 
-func NewDHCPDiscover() ([]byte, error) {
+func NewDHCPDiscover(nodeID uint64, iName string) ([]byte, error) {
 	zeroIP := net.ParseIP("0.0.0.0")
-	iFace, err := net.InterfaceByName("wlp1s0")
+	iFace, err := net.InterfaceByName(iName)
 	if err != nil {
 		return []byte{}, err
 	}
@@ -308,7 +290,7 @@ func NewDHCPDiscover() ([]byte, error) {
 		HType:  1,
 		HLen:   6,
 		Hops:   0,
-		Xid:    11, // random
+		Xid:    nodeID,
 		Secs:   1,
 		Flags:  0,
 		CiAddr: zeroIP,
@@ -329,7 +311,6 @@ func NewDHCPDiscover() ([]byte, error) {
 	if err != nil {
 		return []byte{}, err
 	}
-	fmt.Println(p)
 
 	return p, nil
 
@@ -337,7 +318,7 @@ func NewDHCPDiscover() ([]byte, error) {
 
 func ReadUint64(payload []byte, s, e int) (uint64, error) {
 	if len(payload) < e {
-		return uint64(0), errors.New("Payload error")
+		return uint64(0), PayloadError
 	}
 	xid, err := binary.ReadUvarint(bytes.NewBuffer(payload[s:e]))
 	if err != nil {
@@ -383,7 +364,7 @@ func ReadMAC(payload []byte, s int) (net.HardwareAddr, error) {
 
 func ReadFlags(payload []byte) (uint64, error) {
 	if len(payload) < 12 {
-		errors.New("Payload error")
+		return 0, PayloadError
 	}
 
 	i, err := binary.ReadUvarint(bytes.NewBuffer(payload[10:12]))
@@ -401,7 +382,7 @@ func ReadFlags(payload []byte) (uint64, error) {
 func ReadCString(payload []byte, s, offset int) (string, error) {
 
 	if len(payload) < s+offset {
-		return "", errors.New("Payload error")
+		return "", PayloadError
 	}
 
 	buf := bytes.NewBuffer([]byte{})
@@ -424,7 +405,7 @@ func ReadDHCPOptions(payload []byte) ([]DHCPOption, error) {
 	magicCookieEnd := 240
 
 	if len(payload) < magicCookieEnd {
-		return []DHCPOption{}, errors.New("Payload error")
+		return []DHCPOption{}, PayloadError
 	}
 
 	magicCookie := []byte{byte(99), byte(130), byte(83), byte(99)}
@@ -434,13 +415,18 @@ func ReadDHCPOptions(payload []byte) ([]DHCPOption, error) {
 	}
 
 	opts := []DHCPOption{}
+
 	pR := bytes.NewReader(payload[magicCookieEnd:])
 	// End Loop when only 255 end DHCP option is left
-	for pR.Len() != 1 {
-
+	for {
 		buf := make([]byte, 1)
 		if _, err := pR.Read(buf); err != nil {
 			return []DHCPOption{}, err
+		}
+
+		// break if the end is reached
+		if bytes.Equal(buf, []byte{byte(255)}) {
+			break
 		}
 
 		code, err := binary.ReadUvarint(bytes.NewReader(buf))
@@ -565,7 +551,7 @@ func ReadDHCPSpecs(payload []byte) (DHCPSpecs, error) {
 	return specs, nil
 }
 
-func ResponseHandlerDiscover(ctx Context, in chan UDPPacket) (<-chan net.IP, <-chan struct{}) {
+func ResponseHandlerDiscover(ctx Context, in chan UDPPacket, nodeID uint64) (<-chan net.IP, <-chan struct{}) {
 	ipOut := make(chan net.IP)
 	timeout := make(chan struct{})
 	go func() {
@@ -580,8 +566,14 @@ func ResponseHandlerDiscover(ctx Context, in chan UDPPacket) (<-chan net.IP, <-c
 				timeout <- struct{}{}
 				return
 			case packet := <-in:
-				ip, _ := ReadIP(packet.Payload, 12)
-				ipOut <- ip
+				specs, err := ReadDHCPSpecs(packet.Payload)
+				if err != nil {
+					ctx.Log.Error.Println(err.Error())
+					continue
+				}
+				if specs.Xid == nodeID {
+					ipOut <- specs.YiAddr
+				}
 
 			}
 		}
@@ -591,12 +583,11 @@ func ResponseHandlerDiscover(ctx Context, in chan UDPPacket) (<-chan net.IP, <-c
 
 }
 
-func RequestIPAddr(timeout time.Duration) (<-chan net.IP, <-chan struct{}, error) {
-	inAddr := net.UDPAddr{
-		//IP:   net.ParseIP("255.255.255.255"),
-		IP:   net.ParseIP("192.168.0.14"),
-		Port: 68,
-	}
+func NewNodeID() uint64 {
+	return uint64(11)
+}
+
+func RequestIPAddr(inAddr, remoteAddr net.UDPAddr, timeout time.Duration, iName string) (<-chan net.IP, <-chan struct{}, error) {
 	connIn, err := net.ListenUDP("udp", &inAddr)
 	if err != nil {
 		return nil, nil, err
@@ -610,56 +601,25 @@ func RequestIPAddr(timeout time.Duration) (<-chan net.IP, <-chan struct{}, error
 		return nil, nil, err
 	}
 
-	newIP, timeoutC := ResponseHandlerDiscover(ctx, udpIn)
+	nodeID := NewNodeID()
+	newIP, timeoutC := ResponseHandlerDiscover(ctx, udpIn, nodeID)
 
-	remoteAddr := net.UDPAddr{
-		IP:   net.ParseIP("255.255.255.255"),
-		Port: 67,
-	}
 	conn, err := net.DialUDP("udp", nil, &remoteAddr)
 	if err != nil {
 		ctx.Done()
 		return nil, nil, err
 	}
 
-	p, err := NewDHCPDiscover()
+	p, err := NewDHCPDiscover(nodeID, iName)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	s, err := conn.Write(p)
+	_, err = conn.Write(p)
 	if err != nil {
 		ctx.Done()
 		return nil, nil, err
 	}
-	fmt.Println("Send", s, "bytes")
 
 	return newIP, timeoutC, nil
-}
-
-func main() {
-
-	timeout := 8 * time.Second
-	ip, timeoutC, err := RequestIPAddr(timeout)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-
-	for {
-		select {
-		case r := <-ip:
-			fmt.Println(r)
-			break
-		case <-timeoutC:
-			ip, timeoutC, err = RequestIPAddr(timeout)
-			if err != nil {
-				fmt.Println(err.Error())
-				return
-			}
-			continue
-
-		}
-	}
-
 }

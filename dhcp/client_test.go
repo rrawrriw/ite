@@ -2,8 +2,11 @@ package dhcp
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net"
 	"testing"
+	"time"
 )
 
 func Test_MakeXidBytes_OK(t *testing.T) {
@@ -616,4 +619,120 @@ func Test_ReadDHCPSpecs_OK(t *testing.T) {
 		}
 	}
 
+}
+
+func existsIP(l []net.IP, ip net.IP) bool {
+	for _, e := range l {
+		if bytes.Equal(e, ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func removeIP(l []net.IP, ip net.IP) []net.IP {
+	i := -1
+	for x, e := range l {
+		if bytes.Equal(e, ip) {
+			i = x
+		}
+	}
+
+	if i < 0 {
+		return l
+	}
+
+	return append(l[:i], l[i+1:]...)
+}
+
+func Test_ResponseHandlerDiscover_OK(t *testing.T) {
+	conns := []*net.UDPConn{}
+	timer := time.NewTimer(1 * time.Second)
+	defer timer.Stop()
+
+	ctx := NewContext(conns, timer)
+
+	in := make(chan UDPPacket)
+
+	nodeID := uint64(11)
+	out, timeout := ResponseHandlerDiscover(ctx, in, nodeID)
+
+	amountIPs := 5
+	ips := make([]net.IP, amountIPs)
+	for x := 0; x < amountIPs; x++ {
+		ipS := fmt.Sprintf("192.168.1.%v", x)
+		ips[x] = net.ParseIP(ipS)
+	}
+
+	// Tester goroutine
+	result := make(chan error)
+	go func() {
+		for {
+			select {
+			case <-timeout:
+				if len(ips) != 0 {
+					result <- errors.New("IPs are misssing")
+				}
+			case ip := <-out:
+				if existsIP(ips, ip) {
+					ips = removeIP(ips, ip)
+					if len(ips) == 0 {
+						result <- nil
+					}
+				}
+			}
+		}
+	}()
+
+	// Create UDPPackets
+	udpPackets := make([]UDPPacket, amountIPs)
+	for i, ip := range ips {
+		zeroIP := net.ParseIP("0.0.0.0")
+		macAddr, err := net.ParseMAC("34:23:87:01:c2:f9")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		specs := DHCPSpecs{
+			Op:     1,
+			HType:  2,
+			HLen:   6,
+			Hops:   7,
+			Xid:    nodeID,
+			Secs:   9,
+			Flags:  3,
+			CiAddr: zeroIP,
+			YiAddr: ip,
+			SiAddr: zeroIP,
+			GiAddr: zeroIP,
+			CHAddr: macAddr,
+			SName:  "Name",
+			File:   "File",
+			Options: []DHCPOption{
+				DHCPOption{53, []byte{1}, 1},
+				DHCPOption{61, MakeMACAddrBytes(macAddr), 16},
+				DHCPOption{12, []byte("GO"), 2},
+			},
+		}
+
+		p, err := MakeClientPayload(specs)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		udpPackets[i] = UDPPacket{
+			Payload: p,
+		}
+
+	}
+
+	for _, p := range udpPackets {
+		in <- p
+	}
+
+	err := <-result
+	if err != nil {
+		t.Fatal(err)
+	}
 }
