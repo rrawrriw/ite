@@ -2,7 +2,6 @@ package dhcp
 
 import (
 	"bytes"
-	"fmt"
 	"net"
 	"testing"
 )
@@ -452,11 +451,37 @@ func Test_ReadCString_OK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ReadCString(p, 44, 64)
-	fmt.Println(len(r))
+	r, err := ReadCString(p, 44, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if r != expect {
 		t.Fatal("Expect", expect, "was", r)
+	}
+
+}
+
+func Test_ReadCString_OK2(t *testing.T) {
+	expect := "0123456789012345678901234567890123456789012345678901234567891234"
+	r, err := ReadCString([]byte(expect), 0, 64)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if r != expect {
+		t.Fatal("Expect", expect, "was", r)
+	}
+
+}
+
+func Test_ReadCString_FailPayloadError(t *testing.T) {
+	expect := "0123456789012345678901234567890123456789012345678901234567891234"
+	_, err := ReadCString([]byte(expect), 0, 65)
+
+	if err == nil {
+		t.Fatal("Expect Payload error")
 	}
 
 }

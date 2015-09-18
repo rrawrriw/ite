@@ -398,9 +398,25 @@ func ReadFlags(payload []byte) (uint64, error) {
 
 }
 
-func ReadCString(payload []byte, s, offset int) string {
-	b := payload[s : s+offset]
-	return string(bytes.TrimSuffix(b, []byte{byte(0)}))
+func ReadCString(payload []byte, s, offset int) (string, error) {
+
+	if len(payload) < s+offset {
+		return "", errors.New("Payload error")
+	}
+
+	buf := bytes.NewBuffer([]byte{})
+	r := bytes.NewReader(payload[s:])
+
+	for x := 0; x < offset; x++ {
+		b := make([]byte, 1)
+		r.Read(b)
+		if b[0] == byte(0) {
+			break
+		}
+		buf.Write(b)
+	}
+
+	return buf.String(), nil
 }
 
 func ReadDHCPOptions(payload []byte) ([]DHCPOption, error) {
@@ -527,6 +543,18 @@ func ReadDHCPSpecs(payload []byte) (DHCPSpecs, error) {
 		return DHCPSpecs{}, err
 	}
 	specs.CHAddr = cHAddr
+
+	sName, err := ReadCString(payload, 44, 64)
+	if err != nil {
+		return DHCPSpecs{}, err
+	}
+	specs.SName = sName
+
+	file, err := ReadCString(payload, 108, 128)
+	if err != nil {
+		return DHCPSpecs{}, err
+	}
+	specs.File = file
 
 	opts, err := ReadDHCPOptions(payload)
 	if err != nil {
