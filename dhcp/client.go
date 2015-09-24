@@ -2,12 +2,14 @@ package dhcp
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"math/big"
 	"net"
 	"os"
 	"time"
@@ -583,8 +585,13 @@ func ResponseHandlerDiscover(ctx Context, in chan UDPPacket, nodeID uint64) (<-c
 
 }
 
-func NewNodeID() uint64 {
-	return uint64(11)
+func NewNodeID() (uint64, error) {
+	max := big.NewInt(int64(math.Pow(2, 4*4) - 1))
+	r, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(r.Int64()), nil
 }
 
 func RequestIPAddr(inAddr, remoteAddr net.UDPAddr, timeout time.Duration, iName string) (<-chan net.IP, <-chan struct{}, error) {
@@ -601,7 +608,10 @@ func RequestIPAddr(inAddr, remoteAddr net.UDPAddr, timeout time.Duration, iName 
 		return nil, nil, err
 	}
 
-	nodeID := NewNodeID()
+	nodeID, err := NewNodeID()
+	if err != nil {
+		return nil, nil, err
+	}
 	newIP, timeoutC := ResponseHandlerDiscover(ctx, udpIn, nodeID)
 
 	conn, err := net.DialUDP("udp", nil, &remoteAddr)

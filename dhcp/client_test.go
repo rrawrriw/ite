@@ -621,6 +621,32 @@ func Test_ReadDHCPSpecs_OK(t *testing.T) {
 
 }
 
+func existsID(ids []uint64, id uint64) bool {
+	for _, i := range ids {
+		if i == id {
+			return true
+		}
+	}
+
+	return false
+}
+
+func Test_NewNodeID_OK(t *testing.T) {
+	max := 100
+	ids := make([]uint64, max)
+	for x := 0; x < max; x++ {
+		id, err := NewNodeID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if existsID(ids, id) {
+			t.Fatal("Found douple id")
+		}
+		ids = append(ids, id)
+	}
+
+}
+
 func existsIP(l []net.IP, ip net.IP) bool {
 	for _, e := range l {
 		if bytes.Equal(e, ip) {
