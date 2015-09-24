@@ -13,6 +13,7 @@ type UDPPacket struct {
 func UDPInbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
 	udpIn := make(chan UDPPacket)
 	go func() {
+		ctx.Log.Debug.Println("UDPInbox start")
 		for {
 			payload := make([]byte, MaxUDPPacketSize)
 
@@ -47,6 +48,7 @@ func UDPInbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
 func UDPOutbox(ctx Context, conn *net.UDPConn) (chan UDPPacket, error) {
 	udpOut := make(chan UDPPacket)
 	go func() {
+		ctx.Log.Debug.Println("UDPOutbox start")
 		for {
 			select {
 			case <-ctx.DoneChan:
