@@ -24,6 +24,32 @@ func MakeTestLogger() Logger {
 	return l
 }
 
+func existsID(ids []string, id string) bool {
+	for _, i := range ids {
+		if i == id {
+			return true
+		}
+	}
+
+	return false
+}
+
+func Test_NewNodeID_OK(t *testing.T) {
+	max := 100
+	ids := []string{}
+	for x := 0; x < max; x++ {
+		id, err := NewNodeID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if existsID(ids, id) {
+			t.Fatal("Error double id found")
+		}
+
+		ids = append(ids, id)
+	}
+}
+
 func Test_AwakeDictator(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
@@ -166,7 +192,7 @@ func Test_ExecSlaveCommand_OK(t *testing.T) {
 
 	testOK := false
 
-	h := func(nCtx NodeContext) error {
+	h := func(nCtx NodeContext, p DictatorPayload) error {
 		testOK = true
 		return nil
 	}
