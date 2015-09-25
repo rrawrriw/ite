@@ -564,8 +564,8 @@ func ResponseHandlerDiscover(ctx Context, in chan UDPPacket, nodeID uint64) (<-c
 				return
 			case <-ctx.Timeout.C:
 				ctx.Log.Debug.Println("ResponseHandlerDiscover Timeout")
-				ctx.Done()
 				timeout <- struct{}{}
+				ctx.Done()
 				return
 			case packet := <-in:
 				specs, err := ReadDHCPSpecs(packet.Payload)
